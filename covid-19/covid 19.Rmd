@@ -1,0 +1,183 @@
+---
+title: "COVID-19 Project"
+author: "Jingjing Huang"
+date: "`r Sys.Date()`"
+output:
+  pdf_document: default
+  html_document: default
+---
+# COVID-19 Project
+This is an analysis report based on COVID-19 data with data source of Johns Hopkins University website <"https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/csse_covid_19_time_series/">.
+
+## Data Import
+
+```{r setup, message=FALSE, warning=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(lubridate)
+library(dplyr)
+
+url_in <- "https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/csse_covid_19_time_series/"
+file_names <- c("time_series_covid19_confirmed_US.csv","time_series_covid19_confirmed_global.csv","time_series_covid19_deaths_US.csv","time_series_covid19_deaths_global.csv")
+urls <- str_c(url_in, file_names)
+global_cases<- read_csv(urls[2])
+US_cases<- read_csv(urls[1])
+US_deaths<- read_csv(urls[3])
+global_deaths<- read_csv(urls[4])
+
+```
+
+## Data Transforming and Cleaning Up
+
+
+First, I would like to tidy and clean the **global** data set : global_cases and global_deaths.I put the variable in own column. Also, I delete the column: Lat and Long for creating a more tidy data set. 
+
+```{r tidy_global_data, message=FALSE, warning=FALSE}
+global_cases <- global_cases %>%
+pivot_longer(cols = -c('Province/State', 'Country/Region', Lat, Long), names_to = "date",values_to = "cases" ) %>%
+select(-c(Lat,Long ))
+
+global_deaths <- global_deaths %>%
+pivot_longer(cols = -c('Province/State', 'Country/Region', Lat, Long), names_to = "date",values_to = "deaths" ) %>%
+  select(-c(Lat,Long ))
+
+global <- global_cases %>%
+full_join(global_deaths) %>%
+rename(Country_Region = `Country/Region`, Province_State = `Province/State`) %>%
+mutate(date = mdy(date))
+global <- global %>% filter(cases >0)
+
+```
+
+Then, adding the population information into the same global data set.
+```{r transform global data, message=FALSE, warning=FALSE}
+global <- global %>%
+unite("Combined_Key", c(Province_State, Country_Region), sep = ", ", na.rm = TRUE, remove = FALSE)
+
+uid_lookup_url <- "https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/UID_ISO_FIPS_LookUp_Table.csv"
+uid <- read_csv(uid_lookup_url  ) %>%
+select(-c(Lat, Long_, Combined_Key, code3, iso2, iso3, Admin2))
+
+global <- global %>%
+left_join(uid, by = c("Province_State", "Country_Region")) %>%
+select(-c(UID, FIPS)) %>%
+select(Province_State, Country_Region, date, cases, deaths, Population, Combined_Key)
+summary(global)
+```
+
+Same as tidying the above global data, cleaning and tidy the US data set in following below:
+
+```{r tidy_us_data, message=FALSE, warning=FALSE}
+
+US_cases <- US_cases %>%
+pivot_longer(cols = -(UID:Combined_Key), names_to = "date", values_to = "cases") %>%
+select(Admin2:cases) %>%
+mutate(date = mdy(date)) %>%
+select(-c(Lat, Long_))
+
+US_deaths <- US_deaths %>%
+pivot_longer(cols = -(UID:Population), names_to = "date", values_to = "deaths") %>%
+select(Admin2:deaths) %>%
+mutate(date = mdy(date)) %>%
+select(-c(Lat, Long_))
+
+US <- US_cases %>%
+full_join(US_deaths)
+US<- US %>% filter(cases >= 0)
+summary(US)
+
+```
+
+
+## Visualization & Analysis
+
+Group the US data by Province_State first and group by Country_Region next, summarize the number of cases, deaths, and population. Then calculate and add the "death_ per_mill" column in the data set.  
+```{r plot_US, message=FALSE, warning=FALSE }
+US_by_state <- US %>%
+group_by(Province_State, Country_Region, date, Combined_Key )%>%
+summarize(cases = sum(cases), deaths= sum(deaths), Population = sum(Population  ))%>%
+mutate(deaths_per_mill = deaths *1000000 / Population)%>% select(Province_State, Country_Region, date, cases, deaths, deaths_per_mill, Population, Combined_Key)
+
+US_totals <- US_by_state %>%
+group_by(Country_Region, date ) %>%
+summarize(cases = sum(cases), deaths = sum(deaths), Population = sum(Population)) %>%
+mutate(deaths_per_mill = deaths *1000000 / Population) %>%
+select(Country_Region, date, cases, deaths, deaths_per_mill, Population) %>%
+ungroup()
+
+US_totals %>%
+  filter(cases > 0) %>%
+  ggplot (aes(x = date, y= cases)) + 
+  geom_line(aes(color = "cases")) +
+  geom_point(aes(color = "cases")) +
+  geom_line(aes(y = deaths, color = "deaths" )) +
+  geom_point(aes(y = deaths, color = "deaths"  ))+
+  scale_y_log10() +
+  theme(legend.position = "bottom", axis.text.x = element_text(angle = 90)) + labs(title = "COVID19 in US", y= NULL)
+```
+From the graph above, we can see the trend of the cases and deaths of COVID19 in US. Both of them have the almost same trend by time which increase sharply in the first three months of 2020, then increase slowing in the rest of 2020. From 2021 until present, the total cases and total deaths numbers are growing more slow then last year.
+
+
+```{r plot_US_new, message=FALSE, warning=FALSE }
+US_by_state <- US_by_state %>%
+mutate(new_cases = cases - lag(cases), new_deaths = deaths - lag(deaths))
+US_totals <- US_totals %>%
+mutate(new_cases = cases - lag(cases), new_deaths = deaths - lag(deaths))
+
+US_totals%>%
+  filter(cases > 0) %>%
+  ggplot (aes(x = date, y= new_cases)) + 
+  geom_line(aes(color = "new_cases")) +
+  geom_point(aes(color = "new_cases")) +
+  geom_line(aes(y = new_deaths, color = "new_deaths" )) +
+  geom_point(aes(y = new_deaths, color = "new_deaths" ))+
+  scale_y_log10() +
+  theme(legend.position = "bottom", axis.text.x = element_text(angle = 90)) + labs(title = "COVID19 in US", y= NULL)
+
+```
+The above graph shows the lines of both new cases and new deaths of COVID19 in US. Both the new cases and new deaths are grow very fast until March 2020, then they have a increasing trend until end of 2020. Then, numbers dropping in the first half of 2021, then increasing until reaching their highest in the beginning of 2022.
+
+```{r plot_global, message=FALSE, warning=FALSE}
+global_by_state <- global %>%
+group_by(Province_State, Country_Region, date, Combined_Key )%>%
+summarize(cases = sum(cases), deaths= sum(deaths), Population = sum(Population  ))%>%
+mutate(deaths_per_mill = deaths *1000000 / Population)%>% select(Province_State, Country_Region, date, cases, deaths, deaths_per_mill, Population, Combined_Key)
+
+global_totals <- global_by_state %>%
+group_by(Country_Region, date ) %>%
+summarize(cases = sum(cases), deaths = sum(deaths), Population = sum(Population)) %>%
+mutate(deaths_per_mill = deaths *1000000 / Population) %>%
+select(Country_Region, date, cases, deaths, deaths_per_mill, Population) %>%
+ungroup()
+
+global_totals %>%
+filter(cases > 0) %>%
+ggplot (aes(x = date, y= cases)) +
+geom_line(aes(color = "cases")) +
+geom_point(aes(color = "cases")) +
+geom_line(aes(y = deaths, color = "deaths" )) +
+geom_point(aes(y = deaths, color = "deaths"  ))+
+scale_y_log10() +
+theme(legend.position = "bottom", axis.text.x = element_text(angle = 90)) + labs(title = "COVID19 in Global", y= NULL)
+
+```
+The global COVID19 cases seems has the same trend as the US COVID19 cases.
+
+## New Cases Death Rate Model
+```{r model, message=FALSE, warning=FALSE}
+mod <- lm(new_deaths ~ new_cases, data = US_totals)
+US_totals_new <- US_totals%>% filter(new_cases >= 0)
+US_totals_model <-US_totals_new %>% mutate(pred = predict(mod))
+
+US_totals_model %>%
+ggplot() + geom_point(aes(x= new_cases, y= new_deaths), color = "blue" ) + geom_point(aes(x= new_cases, y= pred ), color= "red") +labs(title = "US New Cases Death-Rate Model", y= NULL)
+
+```
+
+## Conclusion
+
+From the analysis above, we can see the cases and deaths of COVID19 in US have the same trend as in global. The COVID cases and deaths increased sharply until the end of March 2020, then numbers increase slowing in the rest of 2020. Moreover, Both the new cases and new deaths of COVID19 in US reach their highest in the beginning of 2022.
+
+## Bias Identification
+When cleaning the data set, both the US and global data has the data with negative number of cases and deaths. Seems the data set has some data leaking in the original data set or in the transforming process. The missing data could make me ignore much details in analysising the trand of numbers, and it could be a potential source.
+
